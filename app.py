@@ -45,8 +45,12 @@ st.markdown("""
     .css-1kyxreq {
         justify-content: center;
     }
-    header {visibility: hidden;}
     .reportview-container .main footer {visibility: hidden;}
+    
+    /* Ensure Sidebar Toggle is visible and premium */
+    [data-testid="stSidebarNav"] {
+        background-color: transparent !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
