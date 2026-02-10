@@ -1,30 +1,11 @@
 import os
 import sys
-import subprocess
 import json
 import re
-
-# ------------------- AUTO-INSTALL REQUIREMENTS -------------------
-def install_dependencies():
-    required = ["streamlit", "google-generativeai", "python-dotenv", "graphviz"]
-    for package in required:
-        try:
-            __import__(package.replace("-", "_") if package != "google-generativeai" else "google.generativeai")
-        except ImportError:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package, "--user"])
-
-install_dependencies()
-
 import streamlit as st
 import google.generativeai as genai
 from graphviz import Digraph
 from dotenv import load_dotenv
-
-if __name__ == "__main__":
-    if "streamlit" not in sys.modules:
-        print("\n[!] To run this app, please use: streamlit run app.py")
-        print("[!] If streamlit is not installed, run: pip install streamlit\n")
-        # Optional: try to run it for them if possible, but safer to let them do it
 
 # Load environment variables from .env file for local development
 load_dotenv()
