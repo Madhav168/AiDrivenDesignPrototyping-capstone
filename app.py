@@ -112,19 +112,33 @@ else:
 
             prompt = f"""
             Convert the following frontend code into a structured {uml_type}.
-            You MUST return ONLY JSON following the standard UML object format.
-            OUTPUT STRICTLY = ONLY JSON. NO MARKDOWN.
+            
+            You MUST return ONLY JSON. NO MARKDOWN. NO CODE BLOCKS.
+            
+            FORMATS:
+            - Class Diagram: [{{ "name": "A", "attributes": [], "methods": [], "relations": [{{ "target": "B" }}] }}]
+            - Sequence Diagram: {{ "objects": ["User", "System"], "messages": [{{ "from": "User", "to": "System", "msg": "login()" }}] }}
+            - Use Case Diagram: {{ "actors": ["User"], "use_cases": ["Login"], "relations": [{{ "actor": "User", "use_case": "Login" }}] }}
+            - Activity Diagram: {{ "steps": ["Step 1", "Step 2"] }}
+            - Component Diagram: {{ "components": [{{ "name": "UI" }}], "connections": [{{ "source": "UI", "target": "API" }}] }}
             """
 
             resp = model.generate_content(prompt + "\n\n" + code_input)
             raw = resp.text.strip()
 
             try:
-                match = re.search(r'\{.*\}|\[.*\]', raw, re.DOTALL)
-                json_data = match.group(0)
+                # Robust extraction: find the first '[' or '{' and the last ']' or '}'
+                start_idx = min(raw.find('{') if '{' in raw else len(raw), raw.find('[') if '[' in raw else len(raw))
+                end_idx = max(raw.rfind('}') if '}' in raw else -1, raw.rfind(']') if ']' in raw else -1)
+                
+                if start_idx == len(raw) or end_idx == -1:
+                    raise ValueError("No JSON found in response")
+                
+                json_data = raw[start_idx:end_idx+1]
                 data = json.loads(json_data)
             except Exception as e:
                 st.error(f"Failed to parse AI response as JSON: {e}")
+                st.info(f"Raw Response: {raw}")
                 st.stop()
 
             st.subheader("📦 Extracted UML JSON")
@@ -133,36 +147,58 @@ else:
             dot = Digraph(format="png")
             dot.attr(rankdir="TB", dpi="300")
 
-            if uml_type=="Class Diagram":
+            if uml_type=="Class Diagram" and isinstance(data, list):
                 for cls in data:
-                    attrs = "\\l".join(cls.get("attributes", []))
-                    methods = "\\l".join(cls.get("methods", []))
-                    label = f"{{{cls['name']}|{attrs}\\l|{methods}\\l}}"
-                    dot.node(cls["name"], label, shape="record")
+                    name = cls.get("name", "Unknown")
+                    attrs = "\\l".join(cls.get("attributes", []) or [])
+                    methods = "\\l".join(cls.get("methods", []) or [])
+                    label = f"{{{name}|{attrs}\\l|{methods}\\l}}"
+                    dot.node(name, label, shape="record")
                 for cls in data:
-                    for rel in cls.get("relations", []):
-                        dot.edge(cls["name"], rel["target"])
+                    name = cls.get("name", "Unknown")
+                    for rel in cls.get("relations", []) or []:
+                        target = rel.get("target") or rel.get("to")
+                        if target:
+                            dot.edge(name, target)
 
             elif uml_type=="Sequence Diagram":
-                for obj in data["objects"]:
-                    dot.node(obj, shape="box")
-                for msg in data["messages"]:
-                    dot.edge(msg["from"], msg["to"], label=msg["msg"])
+                objs = data.get("objects") or data.get("participants") or []
+                for obj in objs:
+                    # Handle if objects are dicts or strings
+                    name = obj if isinstance(obj, str) else obj.get("name", "Unknown")
+                    dot.node(name, shape="box")
+                
+                msgs = data.get("messages") or []
+                for msg in msgs:
+                    f = msg.get("from")
+                    t = msg.get("to")
+                    m = msg.get("msg") or msg.get("message") or ""
+                    if f and t:
+                        dot.edge(f, t, label=m)
 
             elif uml_type=="Use Case Diagram":
+                cases = data.get("use_cases") or data.get("usecases") or []
                 dot.attr(shape="ellipse")
-                for case in data["use_cases"]:
+                for case in cases:
                     dot.node(case)
+                
+                actors = data.get("actors") or []
                 dot.attr(shape="box")
-                for actor in data["actors"]:
+                for actor in actors:
                     dot.node(actor)
-                for rel in data["relations"]:
-                    dot.edge(rel["actor"], rel["use_case"])
+                
+                rels = data.get("relations") or []
+                for rel in rels:
+                    a = rel.get("actor")
+                    u = rel.get("use_case") or rel.get("usecase")
+                    if a and u:
+                        dot.edge(a, u)
 
             elif uml_type=="Activity Diagram":
                 dot.node("Start", shape="circle", style="filled", fillcolor="black")
                 last = "Start"
-                for step in data["steps"]:
+                steps = data.get("steps") or []
+                for step in steps:
                     dot.node(step, shape="rect")
                     dot.edge(last, step)
                     last = step
@@ -170,10 +206,17 @@ else:
                 dot.edge(last, "End")
 
             elif uml_type=="Component Diagram":
-                for c in data["components"]:
-                    dot.node(c["name"], shape="component")
-                for conn in data["connections"]:
-                    dot.edge(conn["source"], conn["target"])
+                comps = data.get("components") or []
+                for c in comps:
+                    name = c.get("name", "Unknown")
+                    dot.node(name, shape="component")
+                
+                conns = data.get("connections") or data.get("links") or []
+                for conn in conns:
+                    s = conn.get("source") or conn.get("from")
+                    t = conn.get("target") or conn.get("to")
+                    if s and t:
+                        dot.edge(s, t)
 
             output_path = "uml_output"
             dot.render(output_path, cleanup=True)
