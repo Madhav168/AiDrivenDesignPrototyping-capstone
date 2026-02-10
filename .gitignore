@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+.streamlit/
+uml_output.png
+uml_output
+venv/
+env/
