@@ -1,4 +1,8 @@
 streamlit
-google-generativeai
+requests
 python-dotenv
 graphviz
+pandas
+openpyxl
+flask
+flask-cors

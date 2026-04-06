@@ -1,15 +1,19 @@
 import os
 import json
 import re
+import base64
+import requests
 import streamlit as st
-import google.generativeai as genai
 from graphviz import Digraph
 from dotenv import load_dotenv
 import subprocess
 import time
 
-# ── Environment ───────────────────────────────────────────────────────────────
+# ── Environment ─────────────────────
 load_dotenv()
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3-vl")
 
 # ── Graphviz path fix (Windows) ───────────────────────────────────────────────
 if os.name == "nt":
@@ -370,12 +374,10 @@ hr { border-color: var(--border) !important; }
 # ══════════════════════════════════════════════════════════════════════════════
 #  API GUARD
 # ══════════════════════════════════════════════════════════════════════════════
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key:
+if not OLLAMA_API_KEY:
     st.markdown('<div style="height:64px"></div>', unsafe_allow_html=True)
-    st.error("⚠️  `GEMINI_API_KEY` is missing. Add it to your `.env` file and restart the server.")
+    st.error("⚠️  `OLLAMA_API_KEY` is missing. Add it to your `.env` file and restart the server.")
     st.stop()
-genai.configure(api_key=api_key)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SESSION STATE
@@ -394,6 +396,61 @@ for _k, _v in _DEFAULTS.items():
 # ══════════════════════════════════════════════════════════════════════════════
 #  HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
+def call_ollama_cloud(prompt: str, images=None):
+    """
+    Calls the Ollama Cloud API (compatible with standard Ollama API).
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OLLAMA_API_KEY}",
+        # Browser-mimic headers to prevent 404 blocks from cloud proxies
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "HTTP-Referer": "https://aidrivendesignprototyping.streamlit.app/",
+        "X-Title": "ADDP - AI Driven Design Prototyping"
+    }
+    
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": 0.7,
+            "top_p": 0.9
+        }
+    }
+    
+    if images:
+        # images list expected to contain base64 strings
+        payload["images"] = images
+        
+    try:
+        # Pre-clean the URL to ensure no double slashes (like https://ollama.com//api/generate)
+        base_url = OLLAMA_URL.rstrip("/")
+        endpoint = f"{base_url}/api/generate"
+        
+        # Using a session to handle local proxy intercepts more reliably
+        session = requests.Session()
+        response = session.post(endpoint, headers=headers, json=payload, timeout=300, verify=False)
+        
+        if response.status_code == 401 or "unauthorized" in response.text.lower():
+            st.error("Ollama Cloud: Unauthorized. Please check your API Key.")
+            return ""
+            
+        response.raise_for_status()
+        raw_output = response.json().get("response", "")
+        
+        # Deep cleaning: mirrors ShadowPrep's LLMHelper.cleanJsonResponse()
+        clean_text = re.sub(r"<thought>[\s\S]*?<\/thought>", "", raw_output, flags=re.IGNORECASE).strip()
+        clean_text = re.sub(r"<reasoning>[\s\S]*?<\/reasoning>", "", clean_text, flags=re.IGNORECASE).strip()
+        clean_text = re.sub(r"```[a-zA-Z]*\n?", "", clean_text).replace("```", "").strip()
+        
+        return clean_text
+    except Exception as e:
+        st.error(f"Ollama Cloud Error: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+             st.write(f"Server Response: {e.response.text}")
+        return ""
+
 def _strip_fences(t: str) -> str:
     t = re.sub(r"```[a-zA-Z]*\n?", "", t)
     return t.replace("```", "").strip()
@@ -468,7 +525,7 @@ st.markdown(f"""
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="hero fade-up">
-  <div class="hero-eye">⬡ &nbsp; Powered by Gemini 2.0 Flash</div>
+  <div class="hero-eye">⬡ &nbsp; Powered by Ollama Cloud (qwen3-vl)</div>
   <h1 class="hero-h1">
     <span class="grad">AI Driven</span><br>Design Prototyping
   </h1>
@@ -536,9 +593,8 @@ with _mc:
                 st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
 
                 if st.button("⬡  Synthesize Full-Stack Application", key="gen_btn"):
-                    with st.spinner("Analysing blueprint and generating your application…"):
+                    with st.spinner("Analysing blueprint via Ollama Cloud and generating your application…"):
                         try:
-                            _model  = genai.GenerativeModel("models/gemini-2.0-flash")
                             _prompt = """You are a senior full-stack software architect.
 Carefully analyse the uploaded diagram and generate a COMPLETE, production-grade application.
 
@@ -555,21 +611,28 @@ Output EXACTLY this format with no additional text or commentary:
 ===backend===
 [Complete Python Flask source code here]"""
 
-                            _resp = _model.generate_content(
-                                [_prompt, {"mime_type": mime_type, "data": img_bytes}]
-                            )
-                            _raw = _resp.text
+                            # Convert image to base64 for Ollama
+                            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                            
+                            _raw = call_ollama_cloud(_prompt, images=[img_b64])
 
                             _f, _b = "", ""
                             if "===frontend===" in _raw:
-                                _parts = _raw.split("===frontend===")[1].split("===backend===")
-                                _f = _strip_fences(_parts[0])
-                                if len(_parts) > 1:
+                                if "===backend===" in _raw:
+                                    _parts = _raw.split("===frontend===")[1].split("===backend===")
+                                    _f = _strip_fences(_parts[0])
                                     _b = _strip_fences(_parts[1])
+                                else:
+                                    _f = _strip_fences(_raw.split("===frontend===")[1])
 
-                            st.session_state.gen_f = _f
-                            st.session_state.gen_b = _b
-                            st.rerun()
+                            if _f or _b:
+                                st.session_state.gen_f = _f
+                                st.session_state.gen_b = _b
+                                st.rerun()
+                            else:
+                                st.error("Failed to parse the generation. The model response was unexpected.")
+                                with st.expander("Show raw response"):
+                                    st.write(_raw)
 
                         except Exception as _e:
                             st.error(f"Generation failed: {_e}")
@@ -734,9 +797,8 @@ Output EXACTLY this format with no additional text or commentary:
                     if not code_in.strip():
                         st.error("Please paste some source code before extracting.")
                     else:
-                        with st.spinner(f"Analysing code and building {uml_choice}…"):
+                        with st.spinner(f"Analysing code via Ollama Cloud and building {uml_choice}…"):
                             try:
-                                _model  = genai.GenerativeModel("models/gemini-2.0-flash")
                                 _prompt = f"""Analyse the source code and produce a JSON representation for a {uml_choice}.
 
 Output ONLY valid JSON — no markdown fences, no preamble, no commentary whatsoever.
@@ -751,8 +813,8 @@ Required JSON format per diagram type:
 Source Code:
 {code_in}"""
 
-                                _resp = _model.generate_content(_prompt)
-                                _raw  = _strip_fences(_resp.text.strip())
+                                _raw = call_ollama_cloud(_prompt)
+                                _raw = _strip_fences(_raw.strip())
 
                                 _s = min(
                                     _raw.find("{") if "{" in _raw else len(_raw),
